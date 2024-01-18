@@ -106,7 +106,6 @@ class LitMindEye(pl.LightningModule):
         try:
             vd_pipe = VersatileDiffusionDualGuidedPipeline.from_pretrained(vd_cache_dir)
         except:
-            print("Downloading Versatile Diffusion to", vd_cache_dir)
             vd_pipe = VersatileDiffusionDualGuidedPipeline.from_pretrained(
                 "shi-labs/versatile-diffusion",
                 cache_dir=vd_cache_dir
