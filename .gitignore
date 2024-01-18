@@ -9,3 +9,6 @@
 *.pth
 src/evals
 src/evals-*
+
+data/
+.idea
