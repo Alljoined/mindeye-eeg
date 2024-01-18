@@ -441,9 +441,9 @@ def reconstruction(
             if retrieve:
                 continue
             brain_clip_embeddings0 = (
-                brain_clip_embeddings0.view(len(voxel), -1, 768)
+                brain_clip_embeddings0.reshape(len(voxel), -1, 768)
                 if isinstance(clip_extractor, Clipper)
-                else brain_clip_embeddings0.view(len(voxel), -1, 1024)
+                else brain_clip_embeddings0.reshape(len(voxel), -1, 1024)
             )
 
             if recons_per_sample > 0:
@@ -465,7 +465,7 @@ def reconstruction(
                             timesteps=timesteps_prior,
                         )
                 else:
-                    brain_clip_embeddings0 = brain_clip_embeddings0.view(-1, 768)
+                    brain_clip_embeddings0 = brain_clip_embeddings0.reshape(-1, 768)
                     brain_clip_embeddings0 = brain_clip_embeddings0.repeat(recons_per_sample, 1)
                     brain_clip_embeddings = diffusion_prior.p_sample_loop(
                         brain_clip_embeddings0.shape,
@@ -625,7 +625,7 @@ def reconstruction(
 
     if retrieve == False:
         v2c_reference_out = nn.functional.normalize(
-            proj_embeddings.view(len(proj_embeddings), -1), dim=-1
+            proj_embeddings.reshape(len(proj_embeddings), -1), dim=-1
         )
         sims = []
         for im in range(recons_per_sample):
@@ -634,7 +634,7 @@ def reconstruction(
                 .to(proj_embeddings.device)
                 .to(proj_embeddings.dtype)
             )
-            currecon = nn.functional.normalize(currecon.view(len(currecon), -1), dim=-1)
+            currecon = nn.functional.normalize(currecon.reshape(len(currecon), -1), dim=-1)
             cursim = batchwise_cosine_similarity(v2c_reference_out, currecon)
             sims.append(cursim.item())
         if verbose:
@@ -644,7 +644,7 @@ def reconstruction(
             print(best_picks)
     else:
         v2c_reference_out = nn.functional.normalize(
-            proj_embeddings.view(len(proj_embeddings), -1), dim=-1
+            proj_embeddings.reshape(len(proj_embeddings), -1), dim=-1
         )
         retrieved_clips = clip_extractor.embed_image(
             torch.Tensor(image_retrieved).to(device)
