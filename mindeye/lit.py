@@ -150,6 +150,7 @@ class LitMindEye(pl.LightningModule):
         else:
             perm = betas = select = None
 
+        self.clipper.device = self.device  # hack!
         clip_target = self.clipper.embed_image(image).float()
         clip_inputs, clip_inputs_proj = self.prior.eeg2clip(eeg)
 
