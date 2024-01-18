@@ -250,6 +250,7 @@ class LitMindEye(pl.LightningModule):
             and (split != "train")
             and (batch_idx == 0)
         ):
+            torch.backends.cuda.preferred_linalg_library()
             vd_pipe = self.vd_pipe[0].to(self.device)
             grid, _, _, _ = utils.reconstruction(
                 image[:5], eeg[:5],
