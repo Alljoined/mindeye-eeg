@@ -158,7 +158,7 @@ def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, 
 
 
 def mixco(voxels, beta=0.15, s_thresh=0.5):
-    perm = torch.randperm(voxels.shape[0])
+    perm = torch.randperm(voxels.shape[0], device=voxels.device)
     voxels_shuffle = voxels[perm].to(voxels.device, dtype=voxels.dtype)
     betas = (
         torch.distributions.Beta(beta, beta)
