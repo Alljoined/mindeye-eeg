@@ -41,7 +41,7 @@ class TrainConfig(LitMindEyeConfig):
     # ==============
 
     wandb: bool = False
-    wandb_entity: Optional[str] = None
+    wandb_entity: Optional[str] = "alljoined1"
     wandb_project: str = "mindeye_eeg"
 
     checkpoint: bool = False

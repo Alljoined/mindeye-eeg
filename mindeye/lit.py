@@ -1,9 +1,14 @@
 import kornia
 import lightning.pytorch as pl
+import matplotlib.pyplot as plt
 import pydantic
 import torch
 import torch.nn.functional as F
+import wandb
+from diffusers import UniPCMultistepScheduler, VersatileDiffusionDualGuidedPipeline
+from diffusers.models import DualTransformer2DModel
 from kornia.augmentation.container import AugmentationSequential
+from lightning.pytorch.loggers import WandbLogger
 
 from mindeye import utils
 from mindeye.encoder import MambaEncoder
@@ -12,6 +17,7 @@ from mindeye.models import (
     Clipper,
     VersatileDiffusionPriorNetwork,
 )
+from mindeye.utils import REPO_ROOT
 
 
 class LitMindEyeConfig(pydantic.BaseModel):
@@ -28,6 +34,8 @@ class LitMindEyeConfig(pydantic.BaseModel):
 
     max_epochs: int = 240
     lr: float = 3e-4
+
+    sample_seed: int = 42
 
 
 class LitMindEye(pl.LightningModule):
@@ -92,6 +100,43 @@ class LitMindEye(pl.LightningModule):
         self.mixco_end = int(0.33 * cfg.max_epochs)
         soft_loss_temps = utils.cosine_anneal(0.004, 0.0075, cfg.max_epochs - self.mixco_end)
         self.register_buffer("soft_loss_temps", soft_loss_temps)
+
+        vd_cache_dir = REPO_ROOT / "cache" / "versatile-diffusion"
+        vd_cache_dir.mkdir(exist_ok=True, parents=True)
+        try:
+            vd_pipe = VersatileDiffusionDualGuidedPipeline.from_pretrained(vd_cache_dir)
+        except:
+            print("Downloading Versatile Diffusion to", vd_cache_dir)
+            vd_pipe = VersatileDiffusionDualGuidedPipeline.from_pretrained(
+                "shi-labs/versatile-diffusion",
+                cache_dir=vd_cache_dir
+            )
+
+        vd_pipe.to("cpu")
+        vd_pipe.image_unet.eval()
+        vd_pipe.vae.eval()
+        vd_pipe.image_unet.requires_grad_(False)
+        vd_pipe.vae.requires_grad_(False)
+        vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(
+            vd_cache_dir,
+            subfolder="scheduler",
+        )
+
+        # Set weighting of Dual-Guidance
+        text_image_ratio = 0.0  # .5 means equally weight text and image, 0 means use only image
+        for name, module in vd_pipe.image_unet.named_modules():
+            if isinstance(module, DualTransformer2DModel):
+                module.mix_ratio = text_image_ratio
+                for i, type in enumerate(("text", "image")):
+                    if type == "text":
+                        module.condition_lengths[i] = 77
+                        module.transformer_index_for_condition[i] = 1  # use the second (text) transformer
+                    else:
+                        module.condition_lengths[i] = 257
+                        module.transformer_index_for_condition[i] = 0  # use the first (image) transformer
+
+        self.num_inference_steps = 20
+        self.vd_pipe = [vd_pipe]  # wrap so it is not auto-transfered to GPU
 
     def configure_optimizers(self):
         cfg = self.config
@@ -198,5 +243,31 @@ class LitMindEye(pl.LightningModule):
         self.log(f"{split}/sims_base", sims_base, **log_kwargs)
         self.log(f"{split}/fwd_percent_correct", fwd_percent_correct, **log_kwargs)
         self.log(f"{split}/bwd_percent_correct", bwd_percent_correct, **log_kwargs)
+
+        # Visualize
+        if (
+            isinstance(self.logger, WandbLogger)
+            and (self.global_rank == 0)
+            and (split != "train")
+            and (batch_idx == 0)
+        ):
+            vd_pipe = self.vd_pipe[0].to(self.device)
+            grid, _, _, _ = utils.reconstruction(
+                image, eeg,
+                self.clipper, vd_pipe.unet, vd_pipe.vae, vd_pipe.scheduler,
+                diffusion_priors=self.prior,
+                num_inference_steps=self.num_inference_steps,
+                n_samples_save=1,
+                guidance_scale=self.guidance_scale,
+                timesteps_prior=self.timesteps,
+                seed=cfg.sample_seed,
+                retrieve=False,
+                plotting=True,
+                img_variations=False,
+                verbose=False,
+            )
+            vd_pipe.to("cpu")
+            wandb.log({"recons": wandb.Image(grid), "epoch": self.current_epoch})
+            plt.close()
 
         return loss
