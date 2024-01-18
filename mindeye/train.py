@@ -19,15 +19,15 @@ class TrainConfig(LitMindEyeConfig):
     devices: int = 1
     strategy: Optional[str] = "auto"
 
-    precision: Literal["32", "16-mixed", "bf16-mixed"] = "32"
+    precision: Literal["32", "16-mixed", "bf16-mixed"] = "bf16-mixed"
 
     # =================
     # Datamodule Fields
     # =================
 
     eeg_path: str = str(DATA_ROOT / "eeg_5_95_std.pth")
-    batch_size_train: int = 512
-    batch_size_eval: int = 1024
+    batch_size_train: int = 32
+    batch_size_eval: int = 300
     num_workers: int = 8
 
     # ===============
