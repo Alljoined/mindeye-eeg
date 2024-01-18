@@ -151,6 +151,9 @@ class LitMindEye(pl.LightningModule):
             perm = betas = select = None
 
         clip_target = self.clipper.embed_image(image).float()
+
+        print(eeg.device, image.device, eeg.shape)
+        exit()
         clip_inputs, clip_inputs_proj = self.prior.eeg2clip(eeg)
 
         loss_prior, aligned_clip_inputs = self.prior(text_embed=clip_inputs, image_embed=clip_target)
