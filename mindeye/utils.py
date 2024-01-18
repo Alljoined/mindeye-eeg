@@ -15,7 +15,7 @@ from PIL import Image
 from clip_retrieval.clip_client import ClipClient
 from torchvision import transforms
 
-from models import Clipper
+from mindeye.models import Clipper
 
 CODE_ROOT = pathlib.Path(__file__).parent
 REPO_ROOT = CODE_ROOT.parent
