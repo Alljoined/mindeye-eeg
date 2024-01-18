@@ -254,11 +254,11 @@ class LitMindEye(pl.LightningModule):
             torch.backends.cuda.preferred_linalg_library()
             vd_pipe = self.vd_pipe[0].to(self.device)
             grid, _, _, _ = utils.reconstruction(
-                image[:cfg.sample_images], eeg[:cfg.sample_images],
+                image, eeg,
                 self.clipper, vd_pipe.image_unet, vd_pipe.vae, vd_pipe.scheduler,
                 diffusion_priors=self.prior,
                 num_inference_steps=self.num_inference_steps,
-                n_samples_save=1,
+                n_samples_save=cfg.sample_images,
                 guidance_scale=self.guidance_scale,
                 timesteps_prior=self.timesteps,
                 seed=cfg.sample_seed,
