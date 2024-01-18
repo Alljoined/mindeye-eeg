@@ -253,7 +253,7 @@ class LitMindEye(pl.LightningModule):
             vd_pipe = self.vd_pipe[0].to(self.device)
             grid, _, _, _ = utils.reconstruction(
                 image, eeg,
-                self.clipper, vd_pipe.unet, vd_pipe.vae, vd_pipe.scheduler,
+                self.clipper, vd_pipe.image_unet, vd_pipe.vae, vd_pipe.scheduler,
                 diffusion_priors=self.prior,
                 num_inference_steps=self.num_inference_steps,
                 n_samples_save=1,
