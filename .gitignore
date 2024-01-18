@@ -11,4 +11,5 @@ src/evals
 src/evals-*
 
 data/
+cache/
 .idea
