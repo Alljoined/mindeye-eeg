@@ -36,6 +36,7 @@ class LitMindEyeConfig(pydantic.BaseModel):
     lr: float = 3e-4
 
     sample_seed: int = 42
+    sample_images: int = 3
 
 
 class LitMindEye(pl.LightningModule):
@@ -253,7 +254,7 @@ class LitMindEye(pl.LightningModule):
             torch.backends.cuda.preferred_linalg_library()
             vd_pipe = self.vd_pipe[0].to(self.device)
             grid, _, _, _ = utils.reconstruction(
-                image[:1], eeg[:1],
+                image[:cfg.sample_images], eeg[:cfg.sample_images],
                 self.clipper, vd_pipe.image_unet, vd_pipe.vae, vd_pipe.scheduler,
                 diffusion_priors=self.prior,
                 num_inference_steps=self.num_inference_steps,
