@@ -120,7 +120,8 @@ class LitMindEye(pl.LightningModule):
             max_lr=cfg.lr,
             total_steps=int(cfg.max_epochs * cfg.steps_per_epoch),
             final_div_factor=1000,
-            last_epoch=-1, pct_start=(2 / cfg.max_epochs)
+            last_epoch=-1,
+            pct_start=(2 / cfg.max_epochs),
         )
 
         return {

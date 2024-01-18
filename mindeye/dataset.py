@@ -93,12 +93,12 @@ class EEGDataModule(pl.LightningDataModule):
         self.num_train = len(self.datasets["train"])
 
     def train_dataloader(self):
-        return self._loader(split="train")
+        return self._loader(split="train", shuffle=True, drop_last=True)
 
     def val_dataloader(self):
         return self._loader(split="val")
 
-    def _loader(self, split, shuffle=True, drop_last=True):
+    def _loader(self, split, shuffle=False, drop_last=False):
         return DataLoader(
             dataset=self.datasets[split],
             batch_size=self.batch_sizes[split],
