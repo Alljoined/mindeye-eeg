@@ -396,7 +396,7 @@ def reconstruction(
     unet=None,
     vae=None,
     noise_scheduler=None,
-    voxel2clip_cls=None,
+    eeg2clip_cls=None,
     diffusion_priors=None,
     text_token=None,
     img_lowlevel=None,
@@ -435,7 +435,7 @@ def reconstruction(
             diffusion_priors = [diffusion_priors]
         brain_clip_embeddings_sum = None
         for diffusion_prior in diffusion_priors:
-            brain_clip_embeddings0, proj_embeddings = diffusion_prior.voxel2clip(
+            brain_clip_embeddings0, proj_embeddings = diffusion_prior.eeg2clip(
                 voxel.to(device).float()
             )
             if retrieve:
@@ -483,8 +483,8 @@ def reconstruction(
         if recons_per_sample > 0:
             brain_clip_embeddings = brain_clip_embeddings_sum / len(diffusion_priors)
 
-    if voxel2clip_cls is not None:
-        _, cls_embeddings = voxel2clip_cls(voxel.to(device).float())
+    if eeg2clip_cls is not None:
+        _, cls_embeddings = eeg2clip_cls(voxel.to(device).float())
     else:
         cls_embeddings = proj_embeddings
     if verbose:
