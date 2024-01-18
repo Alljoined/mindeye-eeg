@@ -117,7 +117,7 @@ class LitMindEye(pl.LightningModule):
         vd_pipe.image_unet.requires_grad_(False)
         vd_pipe.vae.requires_grad_(False)
         vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(
-            vd_cache_dir,
+            vd_cache_dir / "models--shi-labs--versatile-diffusion" / "snapshots" / "2926f8e11ea526b562cd592b099fcf9c2985d0b7",
             subfolder="scheduler",
         )
 
