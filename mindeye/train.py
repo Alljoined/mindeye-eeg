@@ -8,6 +8,7 @@ from lightning.pytorch.loggers import WandbLogger
 from mindeye.dataset import EEGDataModule
 from mindeye.lit import LitMindEye, LitMindEyeConfig
 from mindeye.utils import DATA_ROOT, LOG_DIR, random_checkpoint_dir
+import os
 
 
 class TrainConfig(LitMindEyeConfig):
@@ -25,7 +26,7 @@ class TrainConfig(LitMindEyeConfig):
     # Datamodule Fields
     # =================
 
-    eeg_path: str = str(DATA_ROOT / "eeg_5_95_std.pth")
+    eeg_path: str = os.path.join(DATA_ROOT,"eeg_5_95_std.pth")
     batch_size_train: int = 32
     batch_size_eval: int = 300
     num_workers: int = 8
@@ -42,7 +43,7 @@ class TrainConfig(LitMindEyeConfig):
 
     wandb: bool = False
     wandb_entity: Optional[str] = "alljoined1"
-    wandb_project: str = "mindeye_eeg"
+    wandb_project: str = "mindeye_mlp_eeg"
 
     checkpoint: bool = False
     checkpoint_dir: Optional[str] = None

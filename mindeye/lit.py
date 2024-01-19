@@ -11,7 +11,7 @@ from kornia.augmentation.container import AugmentationSequential
 from lightning.pytorch.loggers import WandbLogger
 
 from mindeye import utils
-from mindeye.encoder import MambaEncoder
+from mindeye.encoder import MLPEncoder
 from mindeye.models import (
     BrainDiffusionPrior,
     Clipper,
@@ -79,11 +79,7 @@ class LitMindEye(pl.LightningModule):
             learned_query_mode="pos_emb"
         )
 
-        eeg2clip = MambaEncoder(
-            input_features=cfg.input_channels,
-            out_length=257,
-            out_features=clip_features,
-        )
+        eeg2clip = MLPEncoder()
 
         self.guidance_scale = 3.5
         self.timesteps = 100

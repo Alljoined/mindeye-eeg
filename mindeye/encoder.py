@@ -1,106 +1,72 @@
-import einops
-import torch
 import torch.nn as nn
+from functools import partial
 import torch.nn.functional as F
 
-from mamba_ssm import Mamba
-
-
-class BidirectionalMamba(nn.Module):
-
-    def __init__(self, features, state_dim=16, expand=2, **kwargs):
+class MLPEncoder(nn.Module):
+    def __init__(self, out_dim=768, in_dim=512, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False, use_projector=False):
         super().__init__()
+        norm_func = partial(nn.BatchNorm1d, num_features=h) if norm_type == 'bn' else partial(nn.LayerNorm, normalized_shape=h)
+        act_fn = partial(nn.ReLU, inplace=True) if norm_type == 'bn' else nn.GELU
+        act_and_norm = (act_fn, norm_func) if act_first else (norm_func, act_fn)
 
-        mamba_kwargs = dict(d_state=state_dim, expand=(expand / 2), **kwargs)
-        self.mamba_fwd = Mamba(features, **mamba_kwargs)
-        self.mamba_bwd = Mamba(features, **mamba_kwargs)
+        # Calculate the size after pooling
+        self.pool_kernel_size = 4
+        num_channels = 128
+        pooled_size = (in_dim // self.pool_kernel_size) * num_channels
 
-    def forward(self, input):
-        out_fwd = self.mamba_fwd(input)
-        out_bwd = self.mamba_bwd(input.flip(-2)).flip(-2)
-        return out_fwd + out_bwd
-
-
-class CrossAttentionPooling(nn.Module):
-
-    def __init__(self, features, L, num_heads):
-        assert features % num_heads == 0
-        super().__init__()
-
-        self.num_heads = num_heads
-        self.head_dim = features // num_heads
-
-        self.q = nn.Parameter(torch.randn(self.num_heads, L, self.head_dim))
-        self.proj_kv = nn.Linear(features, features * 2, bias=False)
-        self.proj_out = nn.Linear(features, features)
-
-    def forward(self, input):
-        kv = self.proj_kv(input)
-        kv = einops.rearrange(kv, "... l (h d) -> ... h l d", h=self.num_heads)
-        k, v = kv.chunk(2, dim=-1)
-        q = self.q
-
-        # TODO: flash?
-        out = F.scaled_dot_product_attention(q, k, v)
-        out = einops.rearrange(out, "... h l d -> ... l (h d)")
-
-        return self.proj_out(out.to(input))
-
-
-class MambaEncoder(nn.Module):
-
-    def __init__(
-        self,
-        input_features=64,
-        hidden_features=1024,
-        out_features=768,
-        out_length=77,
-        depth=16,
-        pool_heads=16,
-        bias=False,
-    ):
-        super().__init__()
-
-        features = hidden_features
-
-        self.stem = nn.Linear(input_features, features)
-
-        # Mamba
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(features, bias=bias)
-            for _ in range(depth + 1)
-        ])
-        self.mambas = nn.ModuleList([
-            BidirectionalMamba(features, bias=bias)
-            for _ in range(depth)
-        ])
-        self.mambas.append(nn.Identity())
-
-        # Cross-attention
-        self.pool = CrossAttentionPooling(features, L=out_length, num_heads=pool_heads)
-
-        # Head
-        self.use_projector = True  # hack!
-        self.head = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(features, 2 * out_features),
-            nn.SiLU(),
-            nn.Linear(2 * out_features, 2 * out_features),
+        # Linear and MLP layer
+        self.lin0 = nn.Sequential(
+            nn.Linear(pooled_size, h),
+            *[item() for item in act_and_norm],
+            nn.Dropout(0.5),
         )
+        self.mlp = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(h, h),
+                *[item() for item in act_and_norm],
+                nn.Dropout(0.15)
+            ) for _ in range(n_blocks)
+        ])
+        self.lin1 = nn.Linear(h, out_dim, bias=True)
+        self.n_blocks = n_blocks
+        self.clip_size = clip_size
+        
+        self.use_projector = use_projector
+        if use_projector:
+            self.projector = nn.Sequential(
+                nn.LayerNorm(clip_size),
+                nn.GELU(),
+                nn.Linear(clip_size, 2048),
+                nn.LayerNorm(2048),
+                nn.GELU(),
+                nn.Linear(2048, 2048),
+                nn.LayerNorm(2048),
+                nn.GELU(),
+                nn.Linear(2048, clip_size)
+            )
+        
+    def forward(self, x):
+        '''
+            bs, 128, 512 -> bs, 128, 128
+            bs, 16384 -> bs, 32h
+            b2, 32h -> bs, 768
+        '''
+        import pdb
+        pdb.set_trace()
+        # Average pooling over time steps
+        x = F.avg_pool1d(x, self.pool_kernel_size)
+        # Flatten the tensor
+        x = x.view(x.size(0), -1)
 
-    def forward(self, input):  # (B L C)
-        h = self.stem(input)
-
-        # Mamba
-        res = None
-        for norm, mix in zip(self.norms, self.mambas):
-            res = (h + res) if (res is not None) else h
-            h = mix(norm(res))
-            res = res.float()
-        h = h.to(input)
-
-        # Pooling with cross-attention
-        h = self.pool(h)
-
-        # Done!
-        return self.head(h).chunk(2, dim=-1)
+        # Pass through MLPs
+        x = self.lin0(x)  # bs, h
+        residual = x
+        for res_block in range(self.n_blocks):
+            x = self.mlp[res_block](x)
+            x += residual
+            residual = x
+        x = x.reshape(len(x), -1)
+        x = self.lin1(x)
+        if self.use_projector:
+            return x, self.projector(x.reshape(len(x), -1, self.clip_size))
+        return x

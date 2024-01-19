@@ -6,10 +6,13 @@ import torch
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoProcessor
+import os
+import numpy as np
+from scipy.interpolate import interp1d
 
 from mindeye.utils import DATA_ROOT
 
-IMAGENET_ROOT = DATA_ROOT / "imageNet_images"
+IMAGENET_ROOT = os.path.join(DATA_ROOT, "imageNet_images")
 
 
 class EEGDataset(Dataset):
@@ -38,15 +41,22 @@ class EEGDataset(Dataset):
 
         # Crop EEG sequence
         eeg = example["eeg"].float().T
-        eeg = eeg[20:460, :]
-        assert eeg.shape[0] == self.eeg_length
+
+        eeg = eeg[20:460,:]
+        ##### 2023 2 13 add preprocess and transpose
+        eeg = np.array(eeg.transpose(0,1))
+        x = np.linspace(0, 1, eeg.shape[-1])
+        x2 = np.linspace(0, 1, self.data_len)
+        f = interp1d(x, eeg)
+        eeg = f(x2)
+        eeg = torch.from_numpy(eeg).float()
 
         # Get label
         label = torch.tensor(example["label"], dtype=torch.long)
 
         # Get image
         image_name = self.images[example["image"]]
-        image_path = IMAGENET_ROOT / image_name.split("_")[0] / f"{image_name}.JPEG"
+        image_path = os.path.join(IMAGENET_ROOT, image_name.split("_")[0], f"{image_name}.JPEG")
         image_raw = PIL.Image.open(image_path).convert("RGB")
 
         # Transforms
@@ -69,7 +79,7 @@ class EEGDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        eeg_path=str(DATA_ROOT / "eeg_5_95_std.pth"),
+        eeg_path=os.path.join(DATA_ROOT, "eeg_5_95_std.pth"),
         batch_size=32,
         eval_batch_size=300,
         num_workers=2,
@@ -80,7 +90,7 @@ class EEGDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
 
         # TODO: hacky load of splits
-        split_indices = torch.load(DATA_ROOT / "block_splits_by_image_single.pth")
+        split_indices = torch.load(os.path.join(DATA_ROOT , "block_splits_by_image_single.pth"))
         split_indices = split_indices["splits"][0]
 
         self.base_dataset = EEGDataset(eeg_path)
