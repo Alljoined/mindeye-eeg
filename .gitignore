@@ -12,4 +12,5 @@ src/evals-*
 
 data/
 cache/
+logs/
 .idea
