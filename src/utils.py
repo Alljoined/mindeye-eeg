@@ -607,9 +607,6 @@ def reconstruction(
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                
-                # TODO:
-                # noise_pred = dynamic_cfg(noise_pred_uncond, noise_pred_text, guidance_scale)
 
             # compute the previous noisy sample x_t -> x_t-1
             latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
@@ -689,64 +686,6 @@ def reconstruction(
             ax[i].axis('off')
     
     return fig, brain_recons, best_picks, recon_img
-
-def dynamic_cfg(noise_pred_uncond,noise_pred_text,guidance_scale):
-    # DYNAMIC CFG: https://twitter.com/Birchlabs/status/1583984004864172032
-    # THIS CURRENTLY DOES NOT WORK!
-    
-    dynamic_thresholding_percentile = 0.9999999999  # Set the desired percentile (.9995)
-    dynamic_thresholding_mimic_scale = 7.5  # Set the desired mimic scale
-    scale_factor = 27.712812921102035
-    
-    ut = noise_pred_uncond + (noise_pred_text - noise_pred_uncond) * guidance_scale
-    ut_unscaled = ut / scale_factor
-    ut_flattened = ut_unscaled.flatten(2)
-    ut_means = ut_flattened.mean(dim=2).unsqueeze(2)
-    ut_centered = ut_flattened - ut_means
-    
-    dt = noise_pred_uncond + (noise_pred_text - noise_pred_uncond) * dynamic_thresholding_mimic_scale
-    dt_unscaled = dt / scale_factor
-    dt_flattened = dt_unscaled.flatten(2)
-    dt_means = dt_flattened.mean(dim=2).unsqueeze(2)
-    dt_centered = dt_flattened - dt_means
-    dt_q = torch.quantile(dt_centered.abs().float(), dynamic_thresholding_percentile, dim=2)
-
-    a = ut_centered.abs().float()
-    ut_q = torch.quantile(a, dynamic_thresholding_percentile, dim=2)
-    ut_q = torch.maximum(ut_q, dt_q)
-    q_ratio = ut_q / dt_q
-    # print(q_ratio)
-    q_ratio = q_ratio.unsqueeze(2).expand(*ut_centered.shape)
-
-    t = ut_centered / q_ratio
-    uncentered = t + ut_means
-    unflattened = uncentered.unflatten(2, dt.shape[2:])
-    noise_pred = (unflattened * scale_factor).half()
-    return noise_pred
-
-def select_annotations(annots, random=False):
-    """
-    There are 5 annotations per image. Select one of them for each image.
-    """
-    for i, b in enumerate(annots):
-        t = ''
-        if random:
-            # select random non-empty annotation
-            while t == '':
-                rand = torch.randint(5, (1,1))[0][0]
-                t = b[0, rand]
-        else:
-            # select first non-empty annotation
-            for j in range(5):
-                if b[0, j] != '':
-                    t = b[0, j]
-                    break
-        if i == 0:
-            txt = np.array(t)
-        else:
-            txt = np.vstack((txt, t))
-    txt = txt.flatten()
-    return txt
 
 def voxel_select(voxels):
     if voxels.ndim == 2:

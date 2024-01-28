@@ -9,3 +9,5 @@
 *.pth
 src/evals
 src/evals-*
+cache/
+logs/

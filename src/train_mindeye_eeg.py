@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[29]:
 
 
 # # Code to convert this notebook to .py if you want to run it via command line or with Slurm
 # from subprocess import call
-# command = "jupyter nbconvert Train_MindEye.ipynb --to python"
+# command = "jupyter nbconvert train_mindeye_eeg.ipynb --to python"
 # call(command,shell=True)
 
 
@@ -58,9 +58,9 @@ print("distributed =",distributed, "num_devices =", num_devices, "local rank =",
 if utils.is_interactive():
     # Example use
     jupyter_args = "--data_path=/workspace/eeg_reconstruction/shared/natural-scenes-dataset \
-                    --model_name=test \
-                    --subj=1 --hidden --clip_variant=ViT-L/14 --batch_size=32 --n_samples_save=0 \
-                    --max_lr=3e-4 --mixup_pct=.33 --num_epochs=240 --ckpt_interval=5 --use_image_aug"
+                    --model_name=big_batch \
+                    --subj=1 --hidden --clip_variant=ViT-L/14 --batch_size=100 --n_samples_save=1 \
+                    --max_lr=3e-4 --mixup_pct=.33 --num_epochs=240 --ckpt_interval=5 --wandb_log"
     
     jupyter_args = jupyter_args.split()
     print(jupyter_args)
@@ -106,7 +106,7 @@ parser.add_argument(
     help="if not using wandb and want to resume from a ckpt",
 )
 parser.add_argument(
-    "--wandb_project",type=str,default="stability",
+    "--wandb_project",type=str,default="mindeye_mlp_eeg",
     help="wandb project name",
 )
 parser.add_argument(
@@ -166,7 +166,7 @@ parser.add_argument(
     help="Additional MLP after the main MLP so model can separately learn a way to minimize NCE from prior loss (BYOL)",
 )
 parser.add_argument(
-    "--vd_cache_dir", type=str, default='/fsx/proj-medarc/fmri/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7',
+    "--vd_cache_dir", type=str, default='/workspace/eeg_reconstruction/jonathan/mindeye-eeg/cache',
     help="Where is cached Versatile Diffusion model; if not cached will download to this path",
 )
 
@@ -216,36 +216,145 @@ if use_image_aug:
 # In[6]:
 
 
-print('Pulling NSD webdataset data...')
+import numpy as np
+import torch
+from dataset import  create_EEG_dataset
+import torchvision.transforms as transforms
+from einops import rearrange
+import os
+from torch.utils.data import DataLoader
 
-train_url = "{" + f"{data_path}/webdataset_avg_split/train/train_subj0{subj}_" + "{0..17}.tar," + f"{data_path}/webdataset_avg_split/val/val_subj0{subj}_0.tar" + "}"
-val_url = f"{data_path}/webdataset_avg_split/test/test_subj0{subj}_" + "{0..1}.tar"
-print(train_url,"\n",val_url)
-meta_url = f"{data_path}/webdataset_avg_split/metadata_subj0{subj}.json"
-num_train = 8559 + 300
-num_val = 982
+class Config_Generative_Model:
+    
+    def __init__(self):
+        self.seed = 2022
+        self.root_path = '/workspace/eeg_reconstruction/alston/mindeye-eeg/'
+        self.output_path = '/workspace/eeg_reconstruction/alston/mindeye-eeg/exps/'
 
-print('Prepping train and validation dataloaders...')
-train_dl, val_dl, num_train, num_val = utils.get_dataloaders(
-    batch_size,'images',
-    num_devices=num_devices,
-    num_workers=num_workers,
-    train_url=train_url,
-    val_url=val_url,
-    meta_url=meta_url,
-    num_train=num_train,
-    num_val=num_val,
-    val_batch_size=300,
-    cache_dir=data_path, #"/tmp/wds-cache",
-    seed=seed,
-    voxels_key='nsdgeneral.npy',
-    to_tuple=["voxels", "images", "coco"],
-    local_rank=local_rank,
-    world_size=world_size,
-)
+        self.eeg_signals_path = os.path.join('/workspace/eeg_reconstruction/shared/brain2image/eeg_5_95_std.pth')
+        self.splits_path = os.path.join('/workspace/eeg_reconstruction/shared/brain2image/block_splits_by_image_single.pth')
+        
+        self.crop_ratio = 0.2
+        self.img_size = 512
+        self.subject = 4
+
+config = Config_Generative_Model()
+
+class random_crop:
+    
+    def __init__(self, size, p):
+        self.size = size
+        self.p = p
+    
+    def __call__(self, img):
+        if torch.rand(1) < self.p:
+            return transforms.RandomCrop(size=(self.size, self.size))(img)
+        return img
+
+# Define image transforms
+def normalize(img):
+    if img.shape[-1] == 3:
+        img = rearrange(img, 'h w c -> c h w')
+    img = torch.tensor(img, dtype=torch.float32)
+    img = img * 2.0 - 1.0 # to -1 ~ 1
+    return img
+
+img_transform_train = transforms.Compose([
+    normalize,
+    transforms.Resize((224, 224)),
+])
+img_transform_test = transforms.Compose([
+    normalize,
+    transforms.Resize((224, 224)),
+])
+
+eeg_latents_dataset_train, eeg_latents_dataset_test = create_EEG_dataset(eeg_signals_path = config.eeg_signals_path, splits_path = config.splits_path, 
+            image_transform=[img_transform_train, img_transform_test], subject = config.subject)
+
+
+num_train = len(eeg_latents_dataset_train)
+num_val = len(eeg_latents_dataset_test)
+
+train_dl = DataLoader(eeg_latents_dataset_train, num_workers=num_workers, batch_size=batch_size)
+val_dl = DataLoader(eeg_latents_dataset_test, num_workers=num_workers, batch_size=300)
 
 
 # In[7]:
+
+
+from functools import partial
+import torch.nn.functional as F
+
+class BrainNetwork(nn.Module):
+    def __init__(self, out_dim=768, in_dim=512, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False, use_projector=True):
+        super().__init__()
+        norm_func = partial(nn.BatchNorm1d, num_features=h) if norm_type == 'bn' else partial(nn.LayerNorm, normalized_shape=h)
+        act_fn = partial(nn.ReLU, inplace=True) if norm_type == 'bn' else nn.GELU
+        act_and_norm = (act_fn, norm_func) if act_first else (norm_func, act_fn)
+
+        # Calculate the size after pooling
+        self.pool_kernel_size = 4
+        num_channels = 128
+        pooled_size = (in_dim // self.pool_kernel_size) * num_channels
+
+        # Linear and MLP layer
+        self.lin0 = nn.Sequential(
+            nn.Linear(pooled_size, h),
+            *[item() for item in act_and_norm],
+            nn.Dropout(0.5),
+        )
+        self.mlp = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(h, h),
+                *[item() for item in act_and_norm],
+                nn.Dropout(0.15)
+            ) for _ in range(n_blocks)
+        ])
+        self.lin1 = nn.Linear(h, out_dim, bias=True)
+        self.n_blocks = n_blocks
+        self.clip_size = clip_size
+        
+        self.use_projector = use_projector
+        if use_projector:
+            self.projector = nn.Sequential(
+                nn.LayerNorm(clip_size),
+                nn.GELU(),
+                nn.Linear(clip_size, 2048),
+                nn.LayerNorm(2048),
+                nn.GELU(),
+                nn.Linear(2048, 2048),
+                nn.LayerNorm(2048),
+                nn.GELU(),
+                nn.Linear(2048, clip_size)
+            )
+        
+    def forward(self, x):
+        '''
+            bs, 128, 512 -> bs, 128, 128
+            bs, 16384 -> bs, 32h
+            b2, 32h -> bs, 768
+        '''
+        
+        # Average pooling over time steps
+        x = F.avg_pool1d(x, self.pool_kernel_size)
+        # Flatten the tensor
+        x = x.view(x.size(0), -1)
+
+        # Pass through MLPs
+        x = self.lin0(x)  # bs, h
+        residual = x
+        for res_block in range(self.n_blocks):
+            x = self.mlp[res_block](x)
+            x += residual
+            residual = x
+        x = x.reshape(len(x), -1)
+        x = self.lin1(x)
+        if self.use_projector:
+            return x, self.projector(x.reshape(len(x), -1, self.clip_size))
+        return x
+
+
+# In[9]:
 
 
 print('Creating Clipper...')
@@ -265,34 +374,12 @@ else:
     out_dim = clip_size
 print("out_dim:",out_dim)
 
-print('Creating voxel2clip...')
-if subj == 1:
-    num_voxels = 15724
-elif subj == 2:
-    num_voxels = 14278
-elif subj == 3:
-    num_voxels = 15226
-elif subj == 4:
-    num_voxels = 13153
-elif subj == 5:
-    num_voxels = 13039
-elif subj == 6:
-    num_voxels = 17907
-elif subj == 7:
-    num_voxels = 12682
-elif subj == 8:
-    num_voxels = 14386
-voxel2clip_kwargs = dict(in_dim=num_voxels,out_dim=out_dim,clip_size=clip_size,use_projector=use_projector)
-voxel2clip = BrainNetwork(**voxel2clip_kwargs)
+print('Creating eeg2clip...')
+
+num_voxels = 512 # actually is our sequence len
+voxel2clip = BrainNetwork(in_dim=num_voxels,out_dim=out_dim,clip_size=clip_size,use_projector=use_projector)
     
-# load from ckpt
-voxel2clip_path = "None"
-if voxel2clip_path!="None":
-    checkpoint = torch.load(voxel2clip_path, map_location='cpu')
-    voxel2clip.load_state_dict(checkpoint['model_state_dict'],strict=False)
-    del checkpoint
-    
-print("params of voxel2clip:")
+print("params of eeg2clip:")
 if local_rank==0:
     utils.count_params(voxel2clip)
     
@@ -310,7 +397,7 @@ if hidden:
             dim_head=dim_head,
             heads=heads,
             causal=False,
-            num_tokens = 257,
+            num_tokens=257,
             learned_query_mode="pos_emb"
         ).to(device)
     print("prior_network loaded")
@@ -393,7 +480,7 @@ if n_samples_save > 0 and hidden:
     vd_pipe.image_unet.requires_grad_(False)
     vd_pipe.vae.requires_grad_(False)
 
-    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(vd_cache_dir, subfolder="scheduler")
+    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained("/workspace/eeg_reconstruction/jonathan/mindeye-eeg/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7", subfolder="scheduler")
     num_inference_steps = 20
 
     # Set weighting of Dual-Guidance 
@@ -417,8 +504,8 @@ elif n_samples_save > 0:
     print('Creating SD image variations reconstruction pipeline...')
     from diffusers import AutoencoderKL, UNet2DConditionModel, UniPCMultistepScheduler
 
-    sd_cache_dir = '/fsx/home-paulscotti/.cache/huggingface/diffusers/models--lambdalabs--sd-image-variations-diffusers/snapshots/a2a13984e57db80adcc9e3f85d568dcccb9b29fc'
-    unet = UNet2DConditionModel.from_pretrained(sd_cache_dir,subfolder="unet").to(device)
+    sd_cache_dir = '/workspace/eeg_reconstruction/jonathan/mindeye-eeg/cache'
+    unet = UNet2DConditionModel.from_pretrained("lambdalabs/sd-image-variations-diffusers", revision="v2.0",subfolder="unet", cache_dir=sd_cache_dir).to(device)
 
     unet.eval() # dont want to train model
     unet.requires_grad_(False) # dont need to calculate gradients
@@ -453,19 +540,19 @@ print("\nDone with model preparations!")
 
 # # Weights and Biases
 
-# In[8]:
+# In[10]:
 
 
 # params for wandb
 if local_rank==0 and wandb_log: # only use main process for wandb logging
     import wandb
     
-    wandb_project = 'stability'
+    wandb_project = 'mindeye_mlp_eeg'
     wandb_run = model_name
     wandb_notes = ''
     
     print(f"wandb {wandb_project} run {wandb_run}")
-    wandb.login(host='https://stability.wandb.io')#, relogin=True)
+    wandb.login()
     wandb_config = {
       "model_name": model_name,
       "clip_variant": clip_variant,
@@ -481,13 +568,12 @@ if local_rank==0 and wandb_log: # only use main process for wandb logging
       "distributed": distributed,
       "num_devices": num_devices,
       "world_size": world_size,
-      "train_url": train_url,
-      "val_url": val_url,
     }
     print("wandb_config:\n",wandb_config)
     if True: # wandb_auto_resume
         print("wandb_id:",model_name)
         wandb.init(
+            entity = "alljoined1",
             id = model_name,
             project=wandb_project,
             name=wandb_run,
@@ -508,7 +594,7 @@ else:
 
 # # Main
 
-# In[9]:
+# In[11]:
 
 
 epoch = 0
@@ -554,15 +640,15 @@ elif wandb_log:
 torch.cuda.empty_cache()
 
 
-# In[10]:
+# In[12]:
 
 
 diffusion_prior, optimizer, train_dl, val_dl, lr_scheduler = accelerator.prepare(
-diffusion_prior, optimizer, train_dl, val_dl, lr_scheduler
+    diffusion_prior, optimizer, train_dl, val_dl, lr_scheduler
 )
 
 
-# In[11]:
+# In[13]:
 
 
 print(f"{model_name} starting with epoch {epoch} / {num_epochs}")
@@ -582,18 +668,16 @@ for epoch in progress_bar:
     val_loss_nce_sum = 0.
     val_loss_prior_sum = 0.
 
-    for train_i, (voxel, image, coco) in enumerate(train_dl):
+    for train_i, train_batch in enumerate(train_dl):
         with torch.cuda.amp.autocast():
+            voxel = train_batch["eeg"]
+            image = train_batch["image"]
             optimizer.zero_grad()
 
-            repeat_index = train_i % 3
-            
             if use_image_aug:
                 image = img_augment(image)
                 # plt.imshow(utils.torch_to_Image(image))
                 # plt.show()
-
-            voxel = voxel[:,repeat_index].float()
 
             if epoch < int(mixup_pct * num_epochs):
                 voxel, perm, betas, select = utils.mixco(voxel)
@@ -659,13 +743,11 @@ for epoch in progress_bar:
                 lr_scheduler.step()
 
     diffusion_prior.eval()
-    for val_i, (voxel, image, coco) in enumerate(val_dl): 
+    for val_i, val_batch in enumerate(val_dl): 
         with torch.no_grad():
             with torch.cuda.amp.autocast():
-                # repeat_index = val_i % 3
-
-                # voxel = voxel[:,repeat_index].float()
-                voxel = torch.mean(voxel,axis=1).float()
+                voxel = val_batch["eeg"]
+                image = val_batch["image"]
                 
                 if use_image_aug:
                     image = img_augment(image)
@@ -817,4 +899,10 @@ for epoch in progress_bar:
 print("\n===Finished!===\n")
 if not utils.is_interactive():
     sys.exit(0)
+
+
+# In[ ]:
+
+
+
 
